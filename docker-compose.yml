@@ -1,0 +1,13 @@
+services:
+  sanbu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sanbu-app
+    ports:
+      - '3000:3000'
+    environment:
+      - STADIA_API_KEY=${STADIA_API_KEY:-}
+      - STADIA_BASE_URL=${STADIA_BASE_URL:-https://api.stadiamaps.com}
+      - STADIA_ACCEPT_LANGUAGE=${STADIA_ACCEPT_LANGUAGE:-en}
+      - NEXT_PUBLIC_TILE_STYLE_URL=${NEXT_PUBLIC_TILE_STYLE_URL:-}
