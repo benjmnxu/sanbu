@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { geocodeQuery } from '@/lib/geocode';
 import { haversineMeters } from '@/lib/geo';
-import { generateRouteCandidates, scoreRouteByPois } from '@/lib/route-analysis';
+import { buildPoiCorridor } from '@/lib/poi-corridor';
+import { generateCandidateRoutes, scoreRouteFromPool } from '@/lib/route-analysis';
 import { routeWithStadia } from '@/lib/routing';
-import { emptyPoiCounts } from '@/lib/scoring';
 import type { RouteApiResponse, RouteCandidateSummary, RoutingProfile } from '@/lib/types';
 
 const VALID_PROFILES: RoutingProfile[] = ['balanced', 'culture', 'food'];
@@ -60,6 +60,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // Phase 1: Fastest route
     const fastestRoute = await routeWithStadia([
       { lat: origin.lat, lng: origin.lng },
       { lat: destination.lat, lng: destination.lng }
@@ -67,97 +68,73 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     const budgetDurationSec = fastestRoute.durationSec * (1 + detourPct / 100);
 
-    try {
-      const generatedCandidates = await generateRouteCandidates(
-        { lat: origin.lat, lng: origin.lng },
-        { lat: destination.lat, lng: destination.lng },
-        fastestRoute,
-        profile
-      );
+    // Phase 2: Generate 2-3 alternate candidates (Stadia only, fast)
+    const allCandidates = await generateCandidateRoutes(
+      { lat: origin.lat, lng: origin.lng },
+      { lat: destination.lat, lng: destination.lng },
+      fastestRoute
+    );
 
-      const budgetCandidates = generatedCandidates.filter(
-        (candidate) => candidate.durationSec <= budgetDurationSec
-      );
-      const filteredCandidates = budgetCandidates.length > 0 ? budgetCandidates : [fastestRoute];
+    const budgetCandidates = allCandidates.filter(
+      (candidate) => candidate.durationSec <= budgetDurationSec
+    );
+    const filteredCandidates =
+      budgetCandidates.length > 0 ? budgetCandidates : [fastestRoute];
 
-      const scoredCandidates = await Promise.all(
-        filteredCandidates.map(async (candidate) => ({
-          candidate,
-          score: await scoreRouteByPois(candidate, profile)
-        }))
-      );
+    // Phase 3: Build shared POI corridor (geohash-deduped Overpass calls)
+    const corridor = await buildPoiCorridor(filteredCandidates, profile);
 
-      const best = scoredCandidates.reduce((top, current) =>
-        current.score.score > top.score.score ? current : top
-      );
+    // Phase 4: Score all candidates from pool (pure math, no API calls)
+    const scoredCandidates = filteredCandidates.map((candidate) => ({
+      candidate,
+      score: scoreRouteFromPool(candidate, corridor.pool, profile)
+    }));
 
-      const candidateSummaries: RouteCandidateSummary[] = scoredCandidates.map((item) => ({
+    const best = scoredCandidates.reduce((top, current) =>
+      current.score.score > top.score.score ? current : top
+    );
+
+    const candidateSummaries: RouteCandidateSummary[] = scoredCandidates.map(
+      (item) => ({
         polyline: item.candidate.polyline,
         durationSec: item.candidate.durationSec,
         distanceM: item.candidate.distanceM,
         score: item.score.score
-      }));
+      })
+    );
 
-      const response: RouteApiResponse = {
-        fastest: {
-          polyline: fastestRoute.polyline,
-          durationSec: fastestRoute.durationSec,
-          distanceM: fastestRoute.distanceM
-        },
-        best: {
-          polyline: best.candidate.polyline,
-          durationSec: best.candidate.durationSec,
-          distanceM: best.candidate.distanceM,
-          score: best.score.score,
-          highlights: best.score.highlights.map((poi) => ({
-            name: poi.name,
-            lat: poi.lat,
-            lng: poi.lng,
-            category: poi.category,
-            score: poi.score,
-            tags: poi.tags
-          })),
-          why: {
-            poiCounts: best.score.poiCounts,
-            uniqueCategories: best.score.uniqueCategories
-          }
-        },
-        candidates: candidateSummaries
-      };
+    const response: RouteApiResponse = {
+      fastest: {
+        polyline: fastestRoute.polyline,
+        durationSec: fastestRoute.durationSec,
+        distanceM: fastestRoute.distanceM
+      },
+      best: {
+        polyline: best.candidate.polyline,
+        durationSec: best.candidate.durationSec,
+        distanceM: best.candidate.distanceM,
+        score: best.score.score,
+        highlights: best.score.highlights.map((poi) => ({
+          name: poi.name,
+          lat: poi.lat,
+          lng: poi.lng,
+          category: poi.category,
+          score: poi.score,
+          tags: poi.tags
+        })),
+        why: {
+          poiCounts: best.score.poiCounts,
+          uniqueCategories: best.score.uniqueCategories
+        }
+      },
+      candidates: candidateSummaries,
+      poiStatus: corridor.status
+    };
 
-      return NextResponse.json(response);
-    } catch {
-      const fallback: RouteApiResponse = {
-        fastest: {
-          polyline: fastestRoute.polyline,
-          durationSec: fastestRoute.durationSec,
-          distanceM: fastestRoute.distanceM
-        },
-        best: {
-          polyline: fastestRoute.polyline,
-          durationSec: fastestRoute.durationSec,
-          distanceM: fastestRoute.distanceM,
-          score: 0,
-          highlights: [],
-          why: {
-            poiCounts: emptyPoiCounts(),
-            uniqueCategories: 0
-          }
-        },
-        candidates: [
-          {
-            polyline: fastestRoute.polyline,
-            durationSec: fastestRoute.durationSec,
-            distanceM: fastestRoute.distanceM,
-            score: 0
-          }
-        ]
-      };
-
-      return NextResponse.json(fallback);
-    }
+    return NextResponse.json(response);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Route calculation failed';
+    const message =
+      error instanceof Error ? error.message : 'Route calculation failed';
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

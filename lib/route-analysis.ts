@@ -1,8 +1,6 @@
 import { haversineMeters } from '@/lib/geo';
-import { fetchPoisAround } from '@/lib/overpass';
 import { routeWithStadia } from '@/lib/routing';
 import {
-  PROFILE_WEIGHTS,
   computePoiScore,
   countPoiCategories,
   uniqueCategoryCount
@@ -17,86 +15,71 @@ import type {
   ScoredRoute
 } from '@/lib/types';
 
-function clusterScore(pois: ClassifiedPOI[], profile: RoutingProfile): number {
-  let total = 0;
-  for (const poi of pois) {
-    total += PROFILE_WEIGHTS[profile][poi.category] + poi.qualityBonus;
-  }
-  return total;
-}
+const POI_CUTOFF_M = 200;
+const SCORING_SAMPLES = 20;
 
-export async function generateRouteCandidates(
+export async function generateCandidateRoutes(
   origin: Coord,
   destination: Coord,
-  fastest: InternalRouteResult,
-  profile: RoutingProfile
+  fastest: InternalRouteResult
 ): Promise<InternalRouteResult[]> {
-  const samples = sampleAlongLine(fastest.coords, 20);
+  const midLat = (origin.lat + destination.lat) / 2;
+  const midLng = (origin.lng + destination.lng) / 2;
 
-  const scoredSampleResults = await Promise.allSettled(
-    samples.map(async (point) => {
-      const pois = await fetchPoisAround(point, 250, profile);
-      return {
-        point,
-        score: clusterScore(pois, profile)
-      };
-    })
+  const dLat = destination.lat - origin.lat;
+  const dLng = destination.lng - origin.lng;
+
+  // Scale perpendicular offset based on route distance (~100-200m for typical walks)
+  const beelineM = haversineMeters(origin, destination);
+  const offsetScale = Math.min(0.002, beelineM / 5_000_000);
+
+  const waypoints: Coord[] = [
+    { lat: midLat + dLng * offsetScale, lng: midLng - dLat * offsetScale },
+    { lat: midLat - dLng * offsetScale, lng: midLng + dLat * offsetScale }
+  ];
+
+  // For longer routes, add a 1/3 offset as well
+  if (beelineM > 1500) {
+    const thirdLat = origin.lat + dLat / 3;
+    const thirdLng = origin.lng + dLng / 3;
+    waypoints.push({
+      lat: thirdLat + dLng * offsetScale * 0.7,
+      lng: thirdLng - dLat * offsetScale * 0.7
+    });
+  }
+
+  const routeResults = await Promise.allSettled(
+    waypoints.map((wp) => routeWithStadia([origin, wp, destination]))
   );
-  const scoredSamples = scoredSampleResults.map((result, index) => {
-    if (result.status === 'fulfilled') {
-      return result.value;
-    }
-
-    return {
-      point: samples[index],
-      score: 0
-    };
-  });
-
-  const topWaypoints = scoredSamples
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
-    .map((item) => item.point);
-
-  const routedWaypointResults = await Promise.allSettled(
-    topWaypoints.map((waypoint) => routeWithStadia([origin, waypoint, destination]))
-  );
-  const routedWaypointCandidates = routedWaypointResults
-    .filter(
-      (result): result is PromiseFulfilledResult<InternalRouteResult> =>
-        result.status === 'fulfilled'
-    )
-    .map((result) => result.value);
 
   const dedup = new Map<string, InternalRouteResult>();
-  const all = [fastest, ...routedWaypointCandidates];
+  dedup.set(hashSimplifiedCoords(fastest.coords), fastest);
 
-  for (const candidate of all) {
-    const key = hashSimplifiedCoords(candidate.coords);
-    if (!dedup.has(key)) {
-      dedup.set(key, candidate);
+  for (const result of routeResults) {
+    if (result.status === 'fulfilled') {
+      const key = hashSimplifiedCoords(result.value.coords);
+      if (!dedup.has(key)) {
+        dedup.set(key, result.value);
+      }
     }
   }
 
   return Array.from(dedup.values());
 }
 
-export async function scoreRouteByPois(
+export function scoreRouteFromPool(
   route: InternalRouteResult,
+  poiPool: Map<string, ClassifiedPOI>,
   profile: RoutingProfile
-): Promise<ScoredRoute> {
-  const samples = sampleAlongLine(route.coords, 30);
+): ScoredRoute {
+  const samples = sampleAlongLine(route.coords, SCORING_SAMPLES);
   const poiDistanceMap = new Map<string, { poi: ClassifiedPOI; distanceM: number }>();
 
   for (const sample of samples) {
-    let pois: ClassifiedPOI[] = [];
-    try {
-      pois = await fetchPoisAround(sample, 120, profile);
-    } catch {
-      continue;
-    }
-    for (const poi of pois) {
+    for (const poi of poiPool.values()) {
       const distanceM = haversineMeters(sample, { lat: poi.lat, lng: poi.lng });
+      if (distanceM > POI_CUTOFF_M) continue;
+
       const existing = poiDistanceMap.get(poi.key);
       if (!existing || distanceM < existing.distanceM) {
         poiDistanceMap.set(poi.key, { poi, distanceM });
@@ -104,6 +87,13 @@ export async function scoreRouteByPois(
     }
   }
 
+  return buildScoredRoute(poiDistanceMap, profile);
+}
+
+function buildScoredRoute(
+  poiDistanceMap: Map<string, { poi: ClassifiedPOI; distanceM: number }>,
+  profile: RoutingProfile
+): ScoredRoute {
   const scoredPois: ScoredPOI[] = Array.from(poiDistanceMap.values()).map(({ poi, distanceM }) => ({
     ...poi,
     distanceM,

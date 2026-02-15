@@ -42,10 +42,13 @@ export interface BestRouteSummary extends RouteSummary {
   };
 }
 
+export type PoiStatus = 'full' | 'degraded' | 'none';
+
 export interface RouteApiResponse {
   fastest: RouteSummary;
   best: BestRouteSummary;
   candidates: RouteCandidateSummary[];
+  poiStatus: PoiStatus;
 }
 
 export interface ClassifiedPOI {

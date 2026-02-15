@@ -84,8 +84,10 @@ function formatDistance(distanceM: number): string {
 }
 
 export default function HomePage(): JSX.Element {
-  const [origin, setOrigin] = useState('39.9535,-75.1953');
-  const [destination, setDestination] = useState('38.9072,-77.0369');
+  const [origin, setOrigin] = useState('Times Square, Manhattan, New York, NY');
+  const [destination, setDestination] = useState(
+    'Empire State Building, Manhattan, New York, NY'
+  );
   const [selectedOriginCoord, setSelectedOriginCoord] = useState<string | null>(null);
   const [selectedDestinationCoord, setSelectedDestinationCoord] = useState<string | null>(
     null
@@ -468,7 +470,7 @@ export default function HomePage(): JSX.Element {
                     );
                   }, 120);
                 }}
-                placeholder="lat,lng or address"
+                placeholder="Search for place or address"
                 required
               />
               {activeSuggestionField === 'origin' && originSuggestions.length > 0 ? (
@@ -512,7 +514,7 @@ export default function HomePage(): JSX.Element {
                     );
                   }, 120);
                 }}
-                placeholder="lat,lng or address"
+                placeholder="Search for place or address"
                 required
               />
               {activeSuggestionField === 'destination' &&
@@ -586,6 +588,12 @@ export default function HomePage(): JSX.Element {
             </p>
             <p>Unique categories: {result.best.why.uniqueCategories}</p>
             <p>Candidates considered: {result.candidates.length}</p>
+            {result.poiStatus === 'degraded' ? (
+              <p className="poiWarning">POI data may be incomplete.</p>
+            ) : null}
+            {result.poiStatus === 'none' ? (
+              <p className="poiWarning">POI scoring unavailable.</p>
+            ) : null}
 
             <h3>Top highlights</h3>
             <ul>
@@ -731,6 +739,12 @@ export default function HomePage(): JSX.Element {
 
         .summary p {
           margin: 6px 0;
+        }
+
+        .poiWarning {
+          color: #b45309;
+          font-weight: 600;
+          font-size: 0.85rem;
         }
 
         .summary ul {

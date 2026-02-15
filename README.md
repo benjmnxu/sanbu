@@ -46,6 +46,8 @@ docker compose up --build
 - `STADIA_ACCEPT_LANGUAGE` (optional, default `en`)
 - `OVERPASS_URLS` (optional comma-separated endpoint list)
 - `OVERPASS_USER_AGENT` (optional user-agent for Overpass requests)
+- `OVERPASS_TIMEOUT_MS` (optional, default `15000`)
+- `OVERPASS_MAX_CONCURRENCY` (optional, default `4`)
 - `NEXT_PUBLIC_TILE_STYLE_URL` (optional MapLibre style URL)
 
 ## API

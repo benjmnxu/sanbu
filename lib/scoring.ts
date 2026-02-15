@@ -5,6 +5,17 @@ import type {
   ScoredPOI
 } from '@/lib/types';
 
+export const FOOD_AMENITIES = [
+  'cafe',
+  'restaurant',
+  'bar',
+  'pub',
+  'fast_food',
+  'food_court',
+  'ice_cream',
+  'biergarten'
+] as const;
+
 export const PROFILE_WEIGHTS: Record<
   RoutingProfile,
   Record<'culture' | 'food' | 'shops' | 'parks', number>
@@ -35,18 +46,64 @@ function hasNonEmpty(value: string | undefined): boolean {
 
 export function qualityBonus(tags: Record<string, string>): number {
   let bonus = 0;
-  if (hasNonEmpty(tags.wikidata)) {
+
+  const amenity = tags.amenity ?? '';
+  const isFoodPlace = FOOD_AMENITIES.includes(amenity as (typeof FOOD_AMENITIES)[number]);
+  const isChain = hasNonEmpty(tags.brand) || hasNonEmpty(tags['brand:wikidata']);
+
+  // Chain penalty: brand tags indicate corporate/franchise places
+  if (isChain) {
+    bonus -= 1.5;
+  }
+
+  // Wikidata/Wikipedia: only reward for non-food or non-chain food places
+  // (chains get wikidata for the brand, not for being a good place)
+  if (hasNonEmpty(tags.wikidata) && !(isFoodPlace && isChain)) {
     bonus += 2;
   }
-  if (hasNonEmpty(tags.wikipedia)) {
+  if (hasNonEmpty(tags.wikipedia) && !(isFoodPlace && isChain)) {
     bonus += 1;
   }
+
+  // Basic data quality signals
   if (hasNonEmpty(tags.website)) {
     bonus += 0.5;
   }
   if (hasNonEmpty(tags.opening_hours)) {
     bonus += 0.3;
   }
+
+  // Independent/quality food signals
+  if (isFoodPlace) {
+    // Sit-down restaurants and cafes over fast food
+    if (amenity === 'restaurant' || amenity === 'cafe') {
+      bonus += 0.5;
+    }
+    if (amenity === 'fast_food') {
+      bonus -= 0.5;
+    }
+
+    // Outdoor seating suggests a nicer spot
+    if (tags.outdoor_seating === 'yes') {
+      bonus += 0.8;
+    }
+
+    // Specific cuisine indicates character (not just generic fast food)
+    if (hasNonEmpty(tags.cuisine) && !tags.cuisine.includes(';')) {
+      bonus += 0.3;
+    }
+
+    // Dietary options suggest a more curated menu
+    if (hasNonEmpty(tags['diet:vegan']) || hasNonEmpty(tags['diet:vegetarian'])) {
+      bonus += 0.3;
+    }
+
+    // Description means someone took time to document this place
+    if (hasNonEmpty(tags.description)) {
+      bonus += 0.5;
+    }
+  }
+
   return bonus;
 }
 
@@ -55,12 +112,13 @@ export function classifyPoiCategory(
 ): 'culture' | 'food' | 'shops' | 'parks' | null {
   const amenity = tags.amenity ?? '';
   const leisure = tags.leisure ?? '';
+  const hasCuisine = hasNonEmpty(tags.cuisine);
 
   if (hasNonEmpty(tags.tourism) || hasNonEmpty(tags.historic)) {
     return 'culture';
   }
 
-  if (['cafe', 'restaurant', 'bar', 'pub'].includes(amenity)) {
+  if (FOOD_AMENITIES.includes(amenity as (typeof FOOD_AMENITIES)[number]) || hasCuisine) {
     return 'food';
   }
 
