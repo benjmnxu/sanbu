@@ -622,7 +622,7 @@ export default function HomePage(): JSX.Element {
         .layout {
           display: grid;
           grid-template-columns: 360px 1fr;
-          min-height: 100vh;
+          height: 100vh;
           background: #e9eef5;
         }
 
@@ -631,6 +631,7 @@ export default function HomePage(): JSX.Element {
           padding: 20px;
           border-right: 1px solid #dbe2ea;
           overflow-y: auto;
+          height: 100vh;
         }
 
         h1 {
